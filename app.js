@@ -272,15 +272,20 @@ async function loadDevices() {
 }
 
 function deviceHelp() {
-  return 'Kein Spotify-Gerät gefunden. Öffne die <b>Spotify-App</b> (auf diesem Handy oder einem Lautsprecher), spiele kurz irgendwas ab, komm zurück und tippe nochmal auf „Abspielen“.' +
+  return 'Spotify ist auf dem Handy eingeschlafen. Tippe auf „Spotify öffnen“, spiele dort kurz irgendeinen Song an, komm hierher zurück und tippe nochmal auf „▶ Song abspielen“.' +
     '<div class="row" style="margin-top:10px"><a class="btn sm" href="spotify:">Spotify öffnen</a></div>';
 }
 
+function noDevice() { const e = new Error('NO_DEVICE'); e.code = 'NO_DEVICE'; return e; }
+
 async function playTrack(t, keepPosition) {
-  const devices = await loadDevices();
-  if (!devices.length) { const e = new Error('NO_DEVICE'); e.code = 'NO_DEVICE'; throw e; }
+  let devices = [];
+  try { devices = await loadDevices(); } catch (e) { if (e.status !== 404) throw e; }
   const dev = devices.find(d => d.id === S.settings.deviceId) || devices.find(d => d.is_active) || devices[0];
-  S.settings.deviceId = dev.id; save();
+  // Taucht das Gerät nicht in der Liste auf, trotzdem das zuletzt benutzte versuchen –
+  // Spotify nimmt Befehle für kurz inaktive Geräte oft noch an.
+  const devId = dev ? dev.id : S.settings.deviceId;
+  if (!devId) throw noDevice();
   let pos = 0;
   if (S.settings.randomStart && t.dur > 90000) {
     // Irgendwo zwischen 0:30 und spätestens 45 s vor Schluss einsteigen
@@ -289,10 +294,19 @@ async function playTrack(t, keepPosition) {
   }
   if (keepPosition != null) pos = keepPosition;
   t.startAt = pos;
-  await api(`/me/player/play?device_id=${encodeURIComponent(dev.id)}`, {
-    method: 'PUT', body: JSON.stringify({ uris: [t.uri], position_ms: pos }),
-  });
+  try {
+    await api(`/me/player/play?device_id=${encodeURIComponent(devId)}`, {
+      method: 'PUT', body: JSON.stringify({ uris: [t.uri], position_ms: pos }),
+    });
+  } catch (e) {
+    if (!dev && (e.status === 404 || e.status === 403)) throw noDevice();
+    throw e;
+  }
+  S.settings.deviceId = devId; save();
   S.paused = false;
+  // Song in Dauerschleife: Spotify spielt so nie von selbst etwas anderes
+  // und bleibt im Hintergrund wach, bis der nächste Song gestartet wird.
+  try { await api(`/me/player/repeat?state=track&device_id=${encodeURIComponent(devId)}`, { method: 'PUT' }); } catch {}
 }
 
 async function pausePlayback() {
@@ -302,7 +316,10 @@ async function pausePlayback() {
 
 function playError(e) {
   if (e.code === 'NO_DEVICE' || e.status === 404) return sayHtml(deviceHelp(), 'err');
-  if (e.status === 403) return say('Spotify verweigert die Wiedergabe. Das Steuern der Wiedergabe braucht ein Spotify-Premium-Konto. (' + e.message + ')', 'err');
+  if (e.status === 403 && /premium/i.test((e.reason || '') + ' ' + e.message)) {
+    return say('Spotify verweigert die Wiedergabe: Dafür braucht das angemeldete Konto Spotify Premium.', 'err');
+  }
+  if (e.status === 403) return sayHtml(deviceHelp(), 'err');
   say('Abspielen fehlgeschlagen: ' + e.message, 'err');
 }
 
@@ -324,7 +341,7 @@ function newGame() {
     players: names.map(name => ({ name, cards: [pool.pop()], tokens: S.settings.startTokens })),
     deck: pool, turn: 0, current: null, phase: 'ready', slot: null, correct: null, bonus: false, winners: null, round: 1,
   };
-  S.view = 'game'; S.msg = null; S.hint = false;
+  S.view = 'game'; S.msg = null; S.hint = false; S.paused = false;
   save(); keepAwake(); render();
 }
 
@@ -343,11 +360,16 @@ async function drawAndPlay() {
   if (!g.current) {
     if (!g.deck.length) { finishByDeck(); save(); return render(); }
     g.current = g.deck.pop();
+    save();
   }
-  g.phase = 'listening'; g.slot = null; S.hint = false; S.msg = null;
-  save(); render();
-  if (g.demo) return;
-  await busy('Song startet …', () => playTrack(g.current).catch(playError));
+  S.hint = false; S.msg = null;
+  if (g.demo) { g.phase = 'listening'; g.slot = null; save(); return render(); }
+  // Erst in die Rate-Ansicht wechseln, wenn der Song wirklich läuft –
+  // sonst bleibt der „Song abspielen“-Knopf für einen neuen Versuch stehen.
+  await busy('Song startet …', async () => {
+    try { await playTrack(g.current); g.phase = 'listening'; g.slot = null; save(); }
+    catch (e) { playError(e); }
+  });
 }
 
 async function replay() {
@@ -361,7 +383,8 @@ async function togglePause() {
   if (g.demo) return;
   if (S.paused) {
     await busy('', async () => {
-      try { await api('/me/player/play', { method: 'PUT' }); S.paused = false; } catch (e) { playError(e); }
+      try { await api('/me/player/play', { method: 'PUT' }); S.paused = false; }
+      catch { await playTrack(g.current, g.current.startAt ?? 0).catch(playError); }
     });
   } else {
     await busy('', pausePlayback);
@@ -391,7 +414,8 @@ function reveal() {
   if (g.correct) p.cards.push(g.current);
   g.phase = 'revealed'; g.bonus = false; S.msg = null;
   save(); render();
-  if (!g.demo) pausePlayback();
+  // Bewusst NICHT pausieren: Ein pausiertes Spotify schläft im Hintergrund ein
+  // und ist dann für den nächsten Song nicht mehr erreichbar.
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
 
@@ -404,7 +428,7 @@ function nextTurn() {
   }
   g.turn = (g.turn + 1) % g.players.length;
   if (g.turn === 0) g.round += 1;
-  g.current = null; g.phase = 'ready'; g.slot = null; g.correct = null; g.bonus = false; S.hint = false; S.msg = null;
+  g.current = null; g.phase = 'ready'; g.slot = null; g.correct = null; g.bonus = false; S.hint = false; S.paused = false; S.msg = null;
   save(); render();
   window.scrollTo({ top: 0 });
 }
@@ -518,7 +542,7 @@ function viewGame() {
         : `<p class="small" style="margin-top:10px">Demo ohne Ton: Jemand anderes tippt hier und liest Titel &amp; Interpret vor.</p><button class="btn sm" data-action="hint">Titel anzeigen</button>`;
     } else {
       h += `<div class="row" style="justify-content:center;margin-top:12px">
-        <button class="btn sm" data-action="pause">${S.paused ? '▶ Weiter' : '⏸ Pause'}</button>
+        <button class="btn sm" data-action="pause">${S.paused ? '▶ Fortsetzen' : '⏸ Pause'}</button>
         <button class="btn sm" data-action="replay">↺ Nochmal</button></div>`;
     }
     h += `<div class="row" style="justify-content:center;margin-top:10px">
@@ -544,6 +568,9 @@ function viewGame() {
     <label class="check" style="justify-content:center;margin-top:14px">
       <input type="checkbox" data-bind="bonus" ${g.bonus ? 'checked' : ''} ${p.tokens >= MAX_TOKENS ? 'disabled' : ''}>
       <span>Titel &amp; Interpret gewusst → +1 🪙</span></label>
+    ${g.demo ? '' : `<div class="row" style="justify-content:center;margin-top:12px">
+      <button class="btn sm ghost" data-action="pause">${S.paused ? '▶ Fortsetzen' : '⏸ Pause'}</button></div>
+      <p class="small" style="margin-top:6px">Der Song läuft in Schleife weiter, damit Spotify wach bleibt – der nächste Song ersetzt ihn.</p>`}
   </div>`;
   h += `<h2>Zeitstrahl von ${esc(p.name)}</h2><div class="timeline">`;
   const shown = g.correct ? sorted(p.cards) : sorted(p.cards.concat([Object.assign({}, c, { _wrong: true })]));
