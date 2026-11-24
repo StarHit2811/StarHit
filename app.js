@@ -11,6 +11,8 @@ const SCOPES = [
 ].join(' ');
 const REDIRECT_URI = (location.origin + location.pathname).replace(/index\.html$/, '');
 const MAX_TOKENS = 5;
+const CHALLENGE_CREDITS = 2;   // Challenges pro Person und Spiel
+const CHALLENGE_SECONDS = 10;  // Zeitfenster zum Challengen
 
 /* ---------- Speicher (localStorage kann fehlen → try/catch) ---------- */
 const store = {
@@ -27,7 +29,7 @@ const S = {
   playlist: store.get('zk_playlist', null),
   overrides: store.get('zk_overrides', {}),
   excluded: store.get('zk_excluded', {}),
-  settings: Object.assign({ target: 10, randomStart: true, startTokens: 2, deviceId: null }, store.get('zk_settings', {})),
+  settings: Object.assign({ target: 10, randomStart: true, startTokens: 2, deviceId: null, animations: true, challenges: true }, store.get('zk_settings', {})),
   players: store.get('zk_players', ['', '']),
   game: store.get('zk_game', null),
   myPlaylists: null,
@@ -335,11 +337,15 @@ function newGame() {
   const pool = playableTracks().map(t => ({ id: t.id, uri: t.uri, title: t.title, artist: t.artist, cover: t.cover, dur: t.dur, year: yearOf(t) }));
   if (pool.length < names.length + 5) { say(`Zu wenige Songs (${pool.length}). Nimm eine größere Playlist.`, 'err'); return render(); }
   shuffle(pool);
+  const challengesOn = !!S.settings.challenges && names.length > 1;
   S.game = {
     demo: !!S.playlist.demo,
     target: S.settings.target,
-    players: names.map(name => ({ name, cards: [pool.pop()], tokens: S.settings.startTokens })),
+    anim: !!S.settings.animations,
+    challenges: challengesOn,
+    players: names.map(name => ({ name, cards: [pool.pop()], tokens: S.settings.startTokens, credits: challengesOn ? CHALLENGE_CREDITS : 0 })),
     deck: pool, turn: 0, current: null, phase: 'ready', slot: null, correct: null, bonus: false, winners: null, round: 1,
+    challenger: null, cslot: null, challengeResult: null,
   };
   S.view = 'game'; S.msg = null; S.hint = false; S.paused = false;
   save(); keepAwake(); render();
@@ -403,32 +409,154 @@ async function skipWithToken() {
   if (!g.demo) await busy('Song startet …', () => playTrack(g.current).catch(playError));
 }
 
+/* ---------- Challenge ---------- */
+const slotOk = (cards, s, y) => (s === 0 || cards[s - 1].year <= y) && (s === cards.length || y <= cards[s].year);
+
+// Wer darf gerade challengen? Alle außer der Person am Zug, solange sie Credits haben.
+function challengers() {
+  const g = S.game;
+  if (!g || !g.challenges) return [];
+  return g.players.map((pl, i) => ({ pl, i })).filter(x => x.i !== g.turn && (x.pl.credits || 0) > 0);
+}
+
+let cdTimer = null;
+function stopCountdown() { if (cdTimer) { clearInterval(cdTimer); cdTimer = null; } }
+function startCountdown() {
+  stopCountdown();
+  cdTimer = setInterval(() => {
+    const g = S.game;
+    if (!g || g.phase !== 'challenge') return stopCountdown();
+    if (g.cslot != null) return; // pausiert, solange der Name gewählt wird
+    const ms = g.challengeEnds - Date.now();
+    const sec = Math.max(0, Math.ceil(ms / 1000));
+    const cd = document.getElementById('cd'); if (cd) cd.textContent = sec;
+    const cd2 = document.getElementById('cd2'); if (cd2) cd2.textContent = sec;
+    const bar = document.getElementById('cdbar'); if (bar) bar.style.width = Math.max(0, ms / (CHALLENGE_SECONDS * 10)) + '%';
+    if (ms <= 0) { stopCountdown(); render(); }
+  }, 100);
+}
+
+function lockAnswer() {
+  const g = S.game;
+  if (g.slot == null) return;
+  if (!challengers().length) return reveal();
+  g.phase = 'challenge'; g.challengeEnds = Date.now() + CHALLENGE_SECONDS * 1000;
+  g.challenger = null; g.cslot = null; g.challengeLeft = null; S.msg = null;
+  save(); render(); startCountdown();
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// Schritt 1: Innerhalb der Zeit tippt der Challenger auf die Lücke, in die der Song
+// seiner Meinung nach gehört. Die Uhr hält an, solange der Name gewählt wird.
+function pickChallengeSlot(i) {
+  const g = S.game;
+  if (g.phase !== 'challenge' || g.challenger != null || i === g.slot) return;
+  if (g.cslot == null) {
+    const ms = g.challengeEnds - Date.now();
+    if (ms <= 0) return render();
+    g.challengeLeft = ms;
+  }
+  g.cslot = i;
+  save(); render();
+}
+
+function cancelChallenge() {
+  const g = S.game;
+  if (g.phase !== 'challenge' || g.cslot == null) return;
+  g.challengeEnds = Date.now() + (g.challengeLeft || 0);
+  g.cslot = null; g.challengeLeft = null;
+  save(); render(); startCountdown();
+}
+
+// Schritt 2: Wer challengt? Kostet einen Credit (max. 2 pro Spiel).
+function challengeBy(i) {
+  const g = S.game, pl = g.players[i];
+  if (g.phase !== 'challenge' || g.challenger != null || g.cslot == null) return;
+  if (!pl || i === g.turn || (pl.credits || 0) < 1) return;
+  stopCountdown();
+  pl.credits -= 1;
+  g.challenger = i; g.challengeLeft = null; g.phase = 'challengeSet';
+  save(); render();
+}
+
+/* ---------- Animationen ---------- */
+const PHRASES_GOOD = ['Das war dufte, {n}!', 'Toll gequizzed, {n}!', 'Volltreffer, {n}!', 'Ganz großes Ohr, {n}!', 'Da kennt sich wer aus, {n}!'];
+const PHRASES_BAD = ['Das war saise, {n}!', 'Aiaiaia, sehr swak!', 'Dit war nüscht!', 'Autsch, {n}!', 'Knapp daneben ist auch vorbei, {n}.'];
+let fxTimer = null;
+
+function confettiHtml() {
+  const colors = ['#ffffff', '#ffe066', '#ffb347', '#b8f5d0', '#7fd1c7'];
+  let h = '<div class="confetti">';
+  for (let i = 0; i < 40; i++) {
+    h += `<i style="left:${(Math.random() * 100).toFixed(1)}%;background:${colors[i % colors.length]};animation-delay:${(Math.random() * 0.8).toFixed(2)}s;animation-duration:${(2.2 + Math.random() * 1.6).toFixed(2)}s"></i>`;
+  }
+  return h + '</div>';
+}
+
+function celebrate(good, name, sub = '') {
+  const old = document.getElementById('fx'); if (old) old.remove();
+  clearTimeout(fxTimer);
+  const list = good ? PHRASES_GOOD : PHRASES_BAD;
+  const text = list[Math.floor(Math.random() * list.length)].replace('{n}', name);
+  const el = document.createElement('div');
+  el.id = 'fx'; el.className = 'fx ' + (good ? 'good' : 'bad');
+  el.innerHTML = (good ? confettiHtml() : '') + `<div class="t">${esc(text)}</div>` + (sub ? `<div class="s">${esc(sub)}</div>` : '') + '<div class="fxbar"></div>';
+  el.addEventListener('click', closeFx);
+  document.body.appendChild(el);
+  try { if (navigator.vibrate) navigator.vibrate(good ? [60, 40, 60] : [220]); } catch {}
+  fxTimer = setTimeout(closeFx, 4000);
+}
+
+function closeFx() {
+  clearTimeout(fxTimer);
+  const el = document.getElementById('fx');
+  if (!el) return;
+  el.classList.add('out');
+  setTimeout(() => el.remove(), 300);
+}
+
 function reveal() {
   const g = S.game, p = cur();
   if (g.slot == null) return;
-  const cards = sorted(p.cards);
-  const y = g.current.year, i = g.slot;
-  const leftOk = i === 0 || cards[i - 1].year <= y;
-  const rightOk = i === cards.length || y <= cards[i].year;
-  g.correct = leftOk && rightOk;
+  stopCountdown();
+  const cards = sorted(p.cards), y = g.current.year;
+  g.correct = slotOk(cards, g.slot, y);
+  g.challengeResult = null;
+  if (g.challenger != null && g.cslot != null) {
+    // Die Challenge gewinnt nur, wenn die Person am Zug falsch UND die Challenge richtig liegt.
+    const won = !g.correct && slotOk(cards, g.cslot, y);
+    g.challengeResult = won ? 'won' : 'lost';
+    if (won) g.players[g.challenger].cards.push(g.current);
+  }
   if (g.correct) p.cards.push(g.current);
   g.phase = 'revealed'; g.bonus = false; S.msg = null;
   save(); render();
   // Bewusst NICHT pausieren: Ein pausiertes Spotify schläft im Hintergrund ein
   // und ist dann für den nächsten Song nicht mehr erreichbar.
   window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (g.anim) {
+    const ch = g.challenger != null ? g.players[g.challenger] : null;
+    if (g.correct) celebrate(true, p.name, g.challengeResult === 'lost' ? 'Challenge abgewehrt!' : '');
+    else if (g.challengeResult === 'won') celebrate(true, ch.name, 'Challenge gewonnen – die Karte gehört dir!');
+    else celebrate(false, p.name, g.challengeResult === 'lost' ? `Die Challenge von ${ch.name} ging auch daneben.` : '');
+  }
 }
 
 function nextTurn() {
   const g = S.game, p = cur();
+  closeFx();
   if (g.bonus) p.tokens = Math.min(MAX_TOKENS, p.tokens + 1);
-  if (p.cards.length >= g.target) {
-    g.winners = [p.name]; g.phase = 'over'; g.reason = 'target';
+  // Auch wer per Challenge eine Karte bekommen hat, kann gewinnen.
+  const winners = g.players.filter(pl => pl.cards.length >= g.target);
+  if (winners.length) {
+    g.winners = winners.map(w => w.name); g.phase = 'over'; g.reason = 'target';
     save(); return render();
   }
   g.turn = (g.turn + 1) % g.players.length;
   if (g.turn === 0) g.round += 1;
-  g.current = null; g.phase = 'ready'; g.slot = null; g.correct = null; g.bonus = false; S.hint = false; S.paused = false; S.msg = null;
+  g.current = null; g.phase = 'ready'; g.slot = null; g.correct = null; g.bonus = false;
+  g.challenger = null; g.cslot = null; g.challengeLeft = null; g.challengeResult = null;
+  S.hint = false; S.paused = false; S.msg = null;
   save(); render();
   window.scrollTo({ top: 0 });
 }
@@ -493,9 +621,17 @@ function viewHome() {
           ${S.players.length > 1 ? `<button class="btn ghost sm" data-action="delPlayer" data-i="${i}" aria-label="Entfernen">✕</button>` : ''}</div>`;
   });
   h += `</div>${S.players.length < 10 ? '<button class="btn ghost sm" style="margin-top:8px" data-action="addPlayer">+ Mitspieler</button>' : ''}
-        <div class="row" style="margin-top:12px"><span class="grow">Karten zum Sieg</span>
-        <select data-bind="target" style="width:96px">${[5, 6, 7, 8, 10, 12, 15].map(v => `<option ${v === S.settings.target ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
         </div>`;
+
+  // 4 · Spielregeln
+  const targets = [...new Set([5, 7, 10, 12, 15, S.settings.target])].sort((a, b) => a - b);
+  h += `<div class="card"><h2>4 · Spielregeln</h2>
+    <div class="small" style="margin-bottom:6px">Karten zum Sieg</div>
+    <div class="seg">${targets.map(v => `<button class="${v === S.settings.target ? 'on' : ''}" data-action="setTarget" data-v="${v}">${v}</button>`).join('')}</div>
+    <label class="check" style="margin-top:14px"><input type="checkbox" data-bind="animations" ${S.settings.animations ? 'checked' : ''}><span>Animationen bei richtig / falsch</span></label>
+    <label class="check" style="margin-top:10px"><input type="checkbox" data-bind="challenges" ${S.settings.challenges ? 'checked' : ''}>
+      <span>Challenges erlauben<br><span class="small">Je ${CHALLENGE_CREDITS} ⚡ Credits pro Person · ${CHALLENGE_SECONDS} Sekunden Zeit</span></span></label>
+  </div>`;
 
   const canStart = S.playlist && playableTracks().length >= 6;
   h += `<div class="stack">`;
@@ -508,12 +644,33 @@ function cardHtml(c, cls = '') {
   return `<div class="tcard ${cls}"><div class="yr">${esc(c.year)}</div><div class="grow"><div class="ti">${esc(c.title)}</div><div class="ar">${esc(c.artist)}</div></div></div>`;
 }
 
+// Zeitstrahl mit Lücken. o.action = Klick-Aktion (oder keine → nur Anzeige),
+// o.sel/o.selCls/o.selText = gewählte Lücke, o.taken/o.takenBy = schon vergebene Lücke.
+const slotLabel = (cards, i) => i === 0 ? (cards.length ? `vor ${cards[0].year}` : 'hier')
+  : i === cards.length ? `nach ${cards[i - 1].year}` : `zwischen ${cards[i - 1].year} und ${cards[i].year}`;
+
+function slotsHtml(cards, o) {
+  let h = '<div class="timeline">';
+  for (let i = 0; i <= cards.length; i++) {
+    let txt = slotLabel(cards, i);
+    let cls = 'slot', attr = o.action ? `data-action="${o.action}" data-i="${i}"` : 'disabled';
+    if (o.taken === i) { cls += ' taken'; txt = `★ Tipp von ${esc(o.takenBy)}`; attr = 'disabled'; }
+    else if (o.sel === i) { cls += ' ' + (o.selCls || 'sel'); txt = o.selText; }
+    h += `<button class="${cls}" ${attr}>${txt}</button>`;
+    if (i < cards.length) h += cardHtml(cards[i]);
+  }
+  return h + '</div>';
+}
+
+const barHtml = (label, action, enabled = true, cls = 'primary') =>
+  `<div class="bar"><div class="inner"><button class="btn ${cls} big" data-action="${action}" ${enabled ? '' : 'disabled'}>${label}</button></div></div>`;
+
 function viewGame() {
   const g = S.game;
   if (!g) { S.view = 'home'; return viewHome(); }
   const p = cur();
   let h = `<div class="score">` + g.players.map((pl, i) =>
-    `<span class="chip ${i === g.turn && g.phase !== 'over' ? 'on' : ''}">${esc(pl.name)} <b>${pl.cards.length}</b>/${g.target} · 🪙${pl.tokens}</span>`).join('') + `</div>`;
+    `<span class="chip ${i === g.turn && g.phase !== 'over' ? 'on' : ''}">${esc(pl.name)} <b>${pl.cards.length}</b>/${g.target} · 🪙${pl.tokens}${g.challenges ? ` · ⚡${pl.credits || 0}` : ''}</span>`).join('') + `</div>`;
 
   if (g.phase === 'over') {
     h += `<div class="mystery revealed"><div class="q">🏆</div>
@@ -547,21 +704,55 @@ function viewGame() {
     }
     h += `<div class="row" style="justify-content:center;margin-top:10px">
       <button class="btn sm ghost" data-action="skip" ${p.tokens > 0 ? '' : 'disabled'}>🪙 Token: Song überspringen</button></div></div>`;
-    h += `<h2>Wo gehört der Song hin?</h2><div class="timeline">`;
-    for (let i = 0; i <= cards.length; i++) {
-      const label = i === 0 ? (cards.length ? `vor ${cards[0].year}` : 'hier')
-        : i === cards.length ? `nach ${cards[i - 1].year}` : `zwischen ${cards[i - 1].year} und ${cards[i].year}`;
-      h += `<button class="slot ${g.slot === i ? 'sel' : ''}" data-action="slot" data-i="${i}">${g.slot === i ? '★ hier einordnen' : label}</button>`;
-      if (i < cards.length) h += cardHtml(cards[i]);
+    h += `<h2>Wo gehört der Song hin?</h2>` + slotsHtml(cards, { sel: g.slot, selText: '★ hier einordnen', action: 'slot' });
+    h += challengers().length
+      ? barHtml('Antwort einloggen', 'lock', g.slot != null)
+      : barHtml('Aufdecken', 'reveal', g.slot != null);
+    return h;
+  }
+
+  if (g.phase === 'challenge') {
+    const paused = g.cslot != null;
+    const ms = paused ? (g.challengeLeft || 0) : g.challengeEnds - Date.now();
+    const open = paused || ms > 0, sec = Math.max(0, Math.ceil(ms / 1000));
+    h += `<div class="mystery chall">
+      <div class="cd ${open ? '' : 'over'}"><span id="cd">${sec}</span><small>s${paused ? ' ⏸' : ''}</small></div>
+      <div class="cdtrack"><div id="cdbar" style="width:${open ? Math.max(0, ms / (CHALLENGE_SECONDS * 10)) : 0}%"></div></div>
+      <p style="margin-top:12px">${paused
+        ? `<b>Challenge: „${esc(slotLabel(cards, g.cslot))}“</b><br>Wer challengt? Unten auf deinen Namen tippen.`
+        : open
+          ? `<b>Challenge?</b> Wer glaubt, dass ${esc(p.name)} falsch liegt: Tippe jetzt auf die Lücke, in die der Song wirklich gehört.`
+          : 'Zeit abgelaufen – keine Challenge mehr möglich.'}</p>
+    </div>`;
+    h += `<h2>Tipp von ${esc(p.name)}</h2>` + slotsHtml(cards, {
+      taken: g.slot, takenBy: p.name, sel: g.cslot, selCls: 'sel2', selText: '⚡ Challenge hier', action: open ? 'cslot' : null });
+    if (paused) {
+      h += `<div class="bar"><div class="inner"><div class="chpick"><div class="small">Wer challengt?</div><div class="row wrap">${challengers().map(x =>
+        `<button class="btn teal" data-action="challenge" data-i="${x.i}">⚡ ${esc(x.pl.name)} <span class="small">(${x.pl.credits})</span></button>`).join('')}
+        <button class="btn ghost" data-action="cancelChallenge" aria-label="Abbrechen">✕</button></div></div></div></div>`;
+    } else {
+      h += open ? barHtml(`Ohne Challenge aufdecken · <span id="cd2">${sec}</span> s`, 'reveal', true, '') : barHtml('Aufdecken', 'reveal');
     }
-    h += `</div><div class="bar"><div class="inner"><button class="btn primary big" data-action="reveal" ${g.slot == null ? 'disabled' : ''}>Aufdecken</button></div></div>`;
+    return h;
+  }
+
+  if (g.phase === 'challengeSet') {
+    const ch = g.players[g.challenger];
+    h += `<div class="mystery chall"><div class="q">⚡</div>
+      <p style="margin-top:8px"><b>${esc(ch.name)}</b> challengt: „${esc(slotLabel(cards, g.cslot))}“</p>
+      <p class="small">Liegt ${esc(p.name)} falsch und ${esc(ch.name)} richtig, wandert die Karte zu ${esc(ch.name)}.</p></div>`;
+    h += slotsHtml(cards, { taken: g.slot, takenBy: p.name, sel: g.cslot, selCls: 'sel2', selText: `⚡ Tipp von ${esc(ch.name)}` });
+    h += barHtml('Aufdecken', 'reveal');
     return h;
   }
 
   // revealed
   const c = g.current;
+  const chName = g.challenger != null ? g.players[g.challenger].name : '';
   h += `<div class="mystery revealed">
     <div class="verdict ${g.correct ? 'good' : 'bad'}">${g.correct ? '✓ Richtig eingeordnet!' : '✗ Leider falsch'}</div>
+    ${g.challengeResult === 'won' ? `<div class="chres won">⚡ ${esc(chName)} hat richtig gechallengt – die Karte gehört jetzt ${esc(chName)}!</div>` : ''}
+    ${g.challengeResult === 'lost' ? `<div class="chres lost">⚡ Die Challenge von ${esc(chName)} ging daneben – der Credit ist weg.</div>` : ''}
     ${c.cover ? `<img src="${esc(c.cover)}" alt="">` : ''}
     <div class="bigyr">${esc(c.year)}</div>
     <div style="font-weight:700;font-size:18px">${esc(c.title)}</div><div class="small">${esc(c.artist)}</div>
@@ -577,7 +768,7 @@ function viewGame() {
   h += shown.map(x => cardHtml(x, x.id === c.id ? (g.correct ? 'new' : 'wrong') : '')).join('<div class="gap"></div>');
   h += `</div>`;
   if (!g.correct) h += `<p class="small" style="margin-top:8px">Die rot markierte Karte zeigt, wo der Song hingehört hätte. Sie fliegt raus.</p>`;
-  const willWin = p.cards.length >= g.target;
+  const willWin = g.players.some(pl => pl.cards.length >= g.target);
   h += `<div class="bar"><div class="inner"><button class="btn primary big" data-action="next">${willWin ? '🏆 Sieg!' : 'Weiter →'}</button></div></div>`;
   return h;
 }
@@ -650,6 +841,7 @@ function viewHelp() {
     <li>Wer dran ist, hört einen Song und tippt die Lücke an, wo er zeitlich hingehört (davor, dazwischen, danach).</li>
     <li><b>Aufdecken:</b> Passt das Erscheinungsjahr, bleibt die Karte. Sonst fliegt sie raus. Gleiches Jahr wie ein Nachbar zählt als richtig.</li>
     <li>Wer Titel <i>und</i> Interpret nennt, bekommt einen Token 🪙 (max. ${MAX_TOKENS}). Mit einem Token darf man einen Song überspringen.</li>
+    <li><b>Challenge ⚡:</b> Nach „Antwort einloggen“ haben alle anderen ${CHALLENGE_SECONDS} Sekunden Zeit, auf die Lücke zu tippen, in die der Song ihrer Meinung nach wirklich gehört – danach den eigenen Namen wählen. Nur eine Person pro Runde. Liegt die Person am Zug falsch und die Challenge richtig, bekommt die challengende Person die Karte. Jede Challenge kostet einen Credit – jede Person hat ${CHALLENGE_CREDITS} pro Spiel.</li>
     <li>Wer zuerst die eingestellte Anzahl Karten hat, gewinnt. Ist der Stapel leer, gewinnt, wer die meisten hat.</li>
   </ol></div>
   <div class="card"><h2>Technik</h2><p class="small">Die App steuert die Spotify-App auf diesem Handy (oder einem Lautsprecher) fern. Dafür braucht die Person, die sich anmeldet, Spotify Premium. Alle anderen spielen einfach am selben Handy mit – sie brauchen kein Spotify.</p></div>`;
@@ -700,6 +892,11 @@ const actions = {
   hint: () => { S.hint = true; render(); },
   slot: el => { S.game.slot = +el.dataset.i; save(); render(); },
   reveal: () => reveal(),
+  lock: () => lockAnswer(),
+  challenge: el => challengeBy(+el.dataset.i),
+  cslot: el => pickChallengeSlot(+el.dataset.i),
+  cancelChallenge: () => cancelChallenge(),
+  setTarget: el => { S.settings.target = +el.dataset.v; save(); render(); },
   next: () => nextTurn(),
   saveClientId: () => {
     S.clientId = ((document.getElementById('clientId') || {}).value || '').trim();
@@ -739,6 +936,8 @@ document.addEventListener('change', e => {
   const el = e.target, b = el.dataset && el.dataset.bind;
   if (!b) return;
   if (b === 'target') { S.settings.target = +el.value; save(); }
+  if (b === 'animations') { S.settings.animations = el.checked; save(); }
+  if (b === 'challenges') { S.settings.challenges = el.checked; save(); }
   if (b === 'startTokens') { S.settings.startTokens = +el.value; save(); }
   if (b === 'randomStart') { S.settings.randomStart = el.checked; save(); }
   if (b === 'bonus') { S.game.bonus = el.checked; save(); }
@@ -758,6 +957,7 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
 
 (async function init() {
   if (S.game && S.game.phase !== 'over') S.view = 'game';
+  if (S.game && S.game.phase === 'challenge') startCountdown();
   await handleRedirect();
   if (S.msg && S.msg.kind === 'ok' && S.auth) S.view = 'home';
   render();

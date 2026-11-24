@@ -141,3 +141,50 @@ code.copy { display: block; padding: 10px; background: var(--bg); border-radius:
 
 ol.rules { padding-left: 20px; margin: 0; }
 ol.rules li { margin-bottom: 6px; }
+
+/* Spielregeln: Auswahl-Knöpfe */
+.seg { display: flex; gap: 6px; }
+.seg button { flex: 1; min-height: 44px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: var(--text); font: inherit; font-weight: 700; cursor: pointer; }
+.seg button.on { background: var(--accent); border-color: var(--accent); color: #1b1305; }
+
+/* Challenge */
+.slot:disabled { opacity: .45; cursor: default; }
+.slot.taken { opacity: 1; border-style: solid; border-color: var(--accent); background: #2f2617; color: var(--accent); font-weight: 700; min-height: 48px; }
+.slot.sel2 { border-style: solid; border-color: var(--teal); background: #15302d; color: var(--teal); font-weight: 700; min-height: 56px; }
+.mystery.chall { border-color: var(--teal); background: linear-gradient(135deg, #17302d, #1e1b2a); }
+.cd { font-size: 64px; font-weight: 900; color: var(--teal); line-height: 1; font-variant-numeric: tabular-nums; }
+.cd small { font-size: 22px; margin-left: 2px; }
+.cd.over { color: var(--muted); }
+.cdtrack { height: 6px; background: var(--line); border-radius: 3px; margin: 12px auto 0; max-width: 260px; overflow: hidden; }
+.cdtrack div { height: 100%; background: var(--teal); }
+.chbtn { border-color: var(--teal); }
+.btn.teal { background: var(--teal); border-color: var(--teal); color: #0d2421; }
+.slot.sel2:disabled { opacity: 1; }
+.chpick .small { text-align: center; margin-bottom: 6px; }
+.chpick .row > .btn { flex: 1 1 auto; }
+.chpick .row > .btn.ghost { flex: 0 0 52px; }
+.chres { margin: 4px 0 10px; padding: 8px 12px; border-radius: 10px; background: var(--panel-2); font-weight: 600; font-size: 15px; }
+.chres.won { color: var(--teal); }
+.chres.lost { color: var(--muted); }
+
+/* Richtig/Falsch-Overlay */
+.fx { position: fixed; inset: 0; z-index: 50; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  text-align: center; padding: 24px; overflow: hidden; cursor: pointer; animation: fxIn .3s ease-out; }
+.fx.good { background: radial-gradient(circle at 50% 40%, #3ddc84, #0f7a42); }
+.fx.bad { background: radial-gradient(circle at 50% 40%, #ff7a6b, #9c2218); }
+.fx .t { position: relative; font-size: clamp(32px, 10vw, 60px); font-weight: 900; color: #fff; line-height: 1.1;
+  text-shadow: 0 4px 24px rgba(0,0,0,.25); animation: pop .6s cubic-bezier(.2,1.6,.4,1) both .1s; }
+.fx.bad .t { animation: pop .5s both .1s, shake .5s .65s; }
+.fx .s { position: relative; color: rgba(255,255,255,.92); margin-top: 16px; font-size: 19px; font-weight: 600; animation: fxIn .4s both .5s; }
+.fx .fxbar { position: absolute; left: 0; bottom: 0; height: 6px; width: 100%; background: rgba(255,255,255,.6); transform-origin: left; animation: shrink 4s linear forwards; }
+.fx.out { animation: fxOut .3s forwards; }
+.confetti { position: absolute; inset: 0; pointer-events: none; }
+.confetti i { position: absolute; top: -16px; width: 9px; height: 15px; border-radius: 2px; animation-name: fall; animation-timing-function: linear; animation-fill-mode: forwards; }
+@keyframes fxIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fxOut { to { opacity: 0; } }
+@keyframes pop { from { transform: scale(.4); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+@keyframes shake { 0%,100% { transform: translateX(0); } 20%,60% { transform: translateX(-12px); } 40%,80% { transform: translateX(12px); } }
+@keyframes shrink { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@keyframes fall { from { transform: translateY(0) rotate(0); } to { transform: translateY(110vh) rotate(720deg); } }
+@media (prefers-reduced-motion: reduce) { .fx, .fx .t, .fx .s, .confetti i { animation-duration: .01s !important; } }
+.btn.teal .small { color: inherit; opacity: .75; }
