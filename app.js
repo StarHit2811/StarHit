@@ -568,6 +568,7 @@ function nextTurn() {
 /* ---------- Ansichten ---------- */
 function header() {
   const tab = (v, label) => `<button data-action="nav" data-view="${v}" class="${S.view === v ? 'on' : ''}">${label}</button>`;
+  if (S.view === 'card') return `<header class="top"><div class="logo"><img src="icon.svg" alt="">GoBin</div></header>`;
   const lobby = S.view === 'lobby', gobin = S.mode === 'gobin';
   let tabs;
   if (lobby) tabs = tab('songs', 'Songs') + tab('settings', '⚙︎') + tab('help', '?');
@@ -637,7 +638,7 @@ function viewLobby() {
       ${shRun ? '<span class="gt-run">Spiel läuft · fortsetzen</span>' : ''}</span></button>
     <button class="gametile gb" data-action="openGame" data-game="gobin">
       <span class="gt-ico"><span class="mini-wheel"></span></span>
-      <span class="gt-txt"><span class="gt-name">StarHit GoBin</span><span class="gt-sub">Musik-Bingo mit Glücksrad – die Felder liegen auf Papier</span>
+      <span class="gt-txt"><span class="gt-name">StarHit GoBin</span><span class="gt-sub">Musik-Bingo mit Glücksrad – Karten aufs Handy oder Papier</span>
       ${gbRun ? '<span class="gt-run">Spiel läuft · fortsetzen</span>' : ''}</span></button>
     <h2 style="margin-top:22px">Musik für beide Spiele</h2>`;
   h += spotifyCardHtml('Spotify') + playlistCardHtml('Playlist');
@@ -890,7 +891,7 @@ async function busy(label, fn) {
 
 function render() {
   const views = {
-    lobby: viewLobby, home: viewHome, game: viewGame, bingo: viewBingo, songs: viewSongs, settings: viewSettings,
+    lobby: viewLobby, card: gbCardView, home: viewHome, game: viewGame, bingo: viewBingo, songs: viewSongs, settings: viewSettings,
     help: () => S.mode === 'gobin' ? gbHelpHtml() + viewHelp() : viewHelp() + gbHelpHtml(),
   };
   let h = header();
@@ -996,7 +997,7 @@ document.addEventListener('change', e => {
   }
 });
 
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && (S.view === 'game' || S.view === 'bingo')) keepAwake(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && (S.view === 'game' || S.view === 'bingo' || S.view === 'card')) keepAwake(); });
 
 (async function init() {
   // Ein laufendes Spiel des zuletzt gewählten Modus wird direkt fortgesetzt
@@ -1007,5 +1008,8 @@ document.addEventListener('visibilitychange', () => { if (document.visibilitySta
   gbResume();
   await handleRedirect();
   if (S.msg && S.msg.kind === 'ok' && S.auth) S.view = 'lobby';
+  // Per QR-Code geöffnete Bingokarte eines Mitspielers
+  S.card = gbParseCardHash();
+  if (S.card) S.view = 'card';
   render();
 })();

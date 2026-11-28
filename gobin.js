@@ -228,7 +228,7 @@ function gbSetupHtml() {
       <div class="gb-num">${n}<span class="small">Spieler</span></div>
       <button class="btn" data-action="gbPlayers" data-d="1" ${n >= GB_MAX_PLAYERS ? 'disabled' : ''} aria-label="Mehr">+</button>
     </div>
-    <p class="small" style="margin-top:10px">Jede Person bekommt ein eigenes 5×5-Feld und zeichnet es auf Papier ab.</p></div>`;
+    <p class="small" style="margin-top:10px">Jede Person bekommt ein eigenes 5×5-Feld – per QR-Code aufs eigene Handy oder zum Abzeichnen auf Papier.</p></div>`;
   h += `<div class="card"><h2>Die fünf Farben</h2>${gbLegendHtml()}</div>`;
   h += barHtml('Bingo-Felder erzeugen', 'gbCreate', songs > 0);
   return h;
@@ -237,13 +237,20 @@ function gbSetupHtml() {
 function gbBoardsHtml(beforeStart) {
   const b = S.bingo;
   let h = `<div class="turn"><div class="who" style="font-size:24px">${beforeStart ? 'Eure Bingo-Felder' : 'Bingo-Felder'}</div>
-    <div class="small">${beforeStart ? 'Jede Person zeichnet ihr Feld auf Papier ab – Farbstifte oder die Kürzel genügen.' : 'Zum Nachschauen – das Spiel läuft weiter.'}</div></div>`;
-  b.boards.forEach((bd, i) => { h += `<div class="card gb-boardcard"><h3>Spieler ${i + 1}</h3>${gbBoardHtml(bd)}</div>`; });
+    <div class="small">${beforeStart ? 'Jede Person scannt ihren QR-Code und hat die Karte auf dem eigenen Handy – oder zeichnet sie auf Papier ab.' : 'Zum Nachschauen – das Spiel läuft weiter.'}</div></div>`;
+  b.boards.forEach((bd, i) => {
+    const link = gbCardLink(bd, i + 1), qr = gbQrSvg(link);
+    h += `<div class="card gb-boardcard"><h3>Spieler ${i + 1}</h3>${gbBoardHtml(bd)}
+      <div class="gb-qrrow">${qr ? `<div class="gb-qr">${qr}</div>` : ''}
+        <div class="small">${qr ? 'Mit der Handykamera scannen – die Karte erscheint auf dem eigenen Handy.' : 'Link teilen – die Karte erscheint auf dem eigenen Handy.'}
+          <div style="margin-top:8px"><button class="btn sm" data-action="gbShare" data-n="${i + 1}" data-link="${esc(link)}">Link teilen</button></div></div>
+      </div></div>`;
+  });
   if (beforeStart) {
     h += `<div class="card"><h2>Legende</h2>${gbLegendHtml()}</div>
       <div class="stack"><button class="btn block" data-action="gbCreate">Felder neu würfeln</button>
       <button class="btn ghost block" data-action="gbEnd">Spielerzahl ändern</button></div>`;
-    h += barHtml('Alle abgezeichnet – Spiel starten', 'gbStart');
+    h += barHtml('Alle bereit – Spiel starten', 'gbStart');
   } else {
     h += barHtml('Zurück zum Spiel', 'gbBoards');
   }
@@ -331,13 +338,82 @@ function viewBingo() {
 
 function gbHelpHtml() {
   return `<div class="card"><h2>So geht StarHit GoBin</h2><ol class="rules">
-    <li>Spielerzahl wählen. Jede Person zeichnet ihr 5×5-Bingo-Feld auf Papier ab.</li>
+    <li>Spielerzahl wählen. Jede Person scannt ihren QR-Code (Karte aufs eigene Handy) oder zeichnet ihr 5×5-Feld auf Papier ab.</li>
     <li>Glücksrad drehen – die Farbe bestimmt, was diese Runde geraten wird.</li>
     <li>Song abspielen. Wer die Lösung zu kennen glaubt, tippt „Ich weiß es!“ – dann haben die anderen noch ${GB_SECONDS} Sekunden.</li>
     <li>Rotes Licht: nicht mehr raten. „Lösung anzeigen“ – wer richtig lag, hakt ein Feld in der gedrehten Farbe ab.</li>
-    <li>Wer zuerst eine volle Reihe, Spalte oder Diagonale hat, ruft „Bingo!“. Dann „Spiel beenden“.</li>
+    <li>Wer zuerst eine volle Reihe, Spalte oder Diagonale hat, ruft „Bingo!“ – auf dem Handy erscheint es von selbst. Dann „Spiel beenden“.</li>
   </ol>${gbLegendHtml()}</div>`;
 }
+
+/* ---------- Bingo-Karte auf dem eigenen Handy ----------
+   Die Karte steckt komplett im Link (#karte=<25 Ziffern 0–4>&s=<Spielernummer>),
+   daher braucht es keinen Server. Haken speichert jedes Handy für sich. */
+const GB_LINES = [
+  ...[0, 1, 2, 3, 4].map(r => [0, 1, 2, 3, 4].map(c => r * 5 + c)),
+  ...[0, 1, 2, 3, 4].map(c => [0, 1, 2, 3, 4].map(r => r * 5 + c)),
+  [0, 6, 12, 18, 24], [4, 8, 12, 16, 20],
+];
+
+const gbCardLink = (board, n) => `${REDIRECT_URI}#karte=${board.join('')}&s=${n}`;
+
+function gbParseCardHash() {
+  const m = /karte=([0-4]{25})(?:&s=(\d{1,2}))?/.exec(location.hash || '');
+  return m ? { code: m[1], n: +(m[2] || 0) } : null;
+}
+
+function gbQrSvg(text) {
+  if (typeof qrcode !== 'function') return ''; // Bibliothek nicht geladen (z. B. offline) → nur Link
+  try { const q = qrcode(0, 'M'); q.addData(text); q.make(); return q.createSvgTag({ cellSize: 4, margin: 2, scalable: true }); }
+  catch { return ''; }
+}
+
+const gbMarksKey = c => `zk_card_${c.code}_${c.n}`;
+const gbBingoLines = marks => GB_LINES.filter(l => l.every(i => marks.has(i)));
+
+function gbMark(i) {
+  const c = S.card; if (!c) return;
+  const marks = new Set(store.get(gbMarksKey(c), []));
+  const before = gbBingoLines(marks).length;
+  if (marks.has(i)) marks.delete(i); else marks.add(i);
+  store.set(gbMarksKey(c), [...marks]);
+  keepAwake(); render();
+  if (gbBingoLines(marks).length > before) gbBingoFx();
+}
+
+function gbBingoFx() {
+  const old = document.getElementById('fx'); if (old) old.remove();
+  const el = document.createElement('div');
+  el.id = 'fx'; el.className = 'fx good';
+  el.innerHTML = confettiHtml() + '<div class="t" style="font-size:72px">BINGO!</div><div class="s">Ruf es laut in die Runde!</div><div class="fxbar" style="animation-duration:5s"></div>';
+  const close = () => { el.classList.add('out'); setTimeout(() => el.remove(), 300); };
+  el.addEventListener('click', close);
+  document.body.appendChild(el);
+  gbBuzz([80, 50, 80, 50, 200]);
+  setTimeout(() => { if (el.isConnected) close(); }, 5000);
+}
+
+function gbCardView() {
+  const c = S.card, board = c.code.split('').map(Number);
+  const marks = new Set(store.get(gbMarksKey(c), []));
+  const lines = gbBingoLines(marks), inLine = new Set(lines.flat());
+  let h = `<div class="turn"><div class="small">StarHit GoBin · deine Bingokarte</div><div class="who">${c.n ? 'Spieler ' + c.n : 'Bingokarte'}</div></div>`;
+  if (lines.length) h += `<div class="gb-banner">BINGO!${lines.length > 1 ? ` <span>${lines.length}×</span>` : ''}</div>`;
+  h += `<div class="gb-board mine">${board.map((ci, i) => {
+    const col = GB_COLORS[ci];
+    return `<button class="gb-cell ${marks.has(i) ? 'on' : ''} ${inLine.has(i) ? 'line' : ''}" data-action="gbMark" data-i="${i}" style="background:${col.hex};color:${col.fg}" aria-pressed="${marks.has(i)}">${col.cell}</button>`;
+  }).join('')}</div>`;
+  h += `<p class="small" style="text-align:center;margin-top:12px">Richtig geraten? Tippe ein Feld in der gedrehten Farbe an. Nochmal tippen nimmt den Haken zurück.</p>`;
+  h += `<div class="card"><h2>Legende</h2>${gbLegendHtml()}</div>`;
+  h += `<div class="stack"><button class="btn block" data-action="gbClearMarks" ${marks.size ? '' : 'disabled'}>Alle Haken entfernen</button>
+    <button class="btn ghost block" data-action="gbLeaveCard">StarHit öffnen</button></div>`;
+  return h;
+}
+
+window.addEventListener('hashchange', () => {
+  const c = gbParseCardHash();
+  if (c) { S.card = c; S.view = 'card'; render(); window.scrollTo({ top: 0 }); }
+});
 
 /* ---------- Aktionen (werden in app.js eingebunden) ---------- */
 const GOBIN_ACTIONS = {
@@ -356,5 +432,22 @@ const GOBIN_ACTIONS = {
   gbSolve: () => gbSolve(),
   gbNext: () => gbNext(),
   gbEnd: () => gbEnd(),
+  gbMark: el => gbMark(+el.dataset.i),
+  gbClearMarks: () => {
+    if (!confirm('Alle Haken auf dieser Karte entfernen?')) return;
+    store.del(gbMarksKey(S.card)); render();
+  },
+  gbLeaveCard: () => {
+    history.replaceState(null, '', location.pathname + location.search);
+    S.card = null; S.view = 'lobby'; render(); window.scrollTo({ top: 0 });
+  },
+  gbShare: async el => {
+    const url = el.dataset.link, title = `StarHit GoBin – Bingokarte Spieler ${el.dataset.n}`;
+    try {
+      if (navigator.share) { await navigator.share({ title, url }); return; }
+      await navigator.clipboard.writeText(url); say(`Link für Spieler ${el.dataset.n} kopiert.`, 'ok');
+    } catch (e) { if (e && e.name === 'AbortError') return; say('Teilen ging nicht – bitte den QR-Code scannen.', 'err'); }
+    render();
+  },
   gbBoards: () => { gbBoardsOpen = !gbBoardsOpen; render(); window.scrollTo({ top: 0 }); },
 };
