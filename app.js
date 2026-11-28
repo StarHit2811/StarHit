@@ -904,6 +904,7 @@ function render() {
   app.innerHTML = h;
   const nl = document.getElementById('plLink');
   if (nl && keepLink) nl.value = keepLink;
+  gbAfterRender();
 }
 
 /* ---------- Aktionen ---------- */

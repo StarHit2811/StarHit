@@ -94,9 +94,48 @@ function gbSpin() {
     void el.getBoundingClientRect();
     el.style.transition = `transform ${GB_SPIN_MS}ms cubic-bezier(.15,.75,.15,1)`;
     el.style.transform = `rotate(${to}deg)`;
+    gbTickLoop(el);
   }
   gbBuzz(25);
-  setTimeout(() => { gbSpinning = false; gbBuzz([40, 30, 40]); render(); window.scrollTo({ top: 0 }); }, GB_SPIN_MS + 700);
+  setTimeout(() => gbLand(idx), GB_SPIN_MS);
+  setTimeout(() => { gbSpinning = false; render(); window.scrollTo({ top: 0 }); }, GB_SPIN_MS + 1800);
+}
+
+// Der Zeiger schnackelt jedes Mal, wenn ein Stift (alle 24°) an ihm vorbeizieht.
+function gbTickLoop(el) {
+  const ptr = document.querySelector('.gb-pointer');
+  let last = null;
+  const step = () => {
+    if (!gbSpinning || !el.isConnected) return;
+    const t = getComputedStyle(el).transform;
+    if (t && t !== 'none') {
+      const m = new DOMMatrixReadOnly(t);
+      const a = ((Math.atan2(m.b, m.a) * 180 / Math.PI) + 360) % 360;
+      const peg = Math.floor(a / 24);
+      if (last !== null && peg !== last && ptr) { ptr.classList.remove('tick'); void ptr.getBoundingClientRect(); ptr.classList.add('tick'); }
+      last = peg;
+    }
+    requestAnimationFrame(step);
+  };
+  requestAnimationFrame(step);
+}
+
+// Effekt beim Anhalten: Segment blitzt, Funken in der Farbe, Zeiger hüpft, Aufgabe ploppt auf.
+function gbLand(idx) {
+  const w = document.querySelector('.gb-wheel');
+  if (!w) return;
+  const c = GB_COLORS[idx];
+  w.classList.remove('spinning'); w.classList.add('landed');
+  w.style.setProperty('--lc', c.hex);
+  let sparks = '';
+  for (let k = 0; k < 34; k++) {
+    const a = Math.PI * (0.05 + Math.random() * 0.9), d = 70 + Math.random() * 130; // Fächer nach unten über das Rad
+    const sz = 6 + Math.random() * 8;
+    sparks += `<i style="--dx:${(Math.cos(a) * d).toFixed(0)}px;--dy:${(Math.sin(a) * d * 0.9).toFixed(0)}px;width:${sz.toFixed(0)}px;height:${sz.toFixed(0)}px;background:${k % 3 ? c.hex : '#fff8d6'};animation-delay:${(Math.random() * 0.12).toFixed(2)}s"></i>`;
+  }
+  w.querySelector('.gb-burst').innerHTML = sparks;
+  w.insertAdjacentHTML('beforeend', `<div class="gb-landbadge" style="--c:${c.hex};--fg:${c.fg}">${gbIcon(idx, 26)}<span>${c.task}</span></div>`);
+  gbBuzz([40, 30, 40, 30, 90]);
 }
 
 async function gbPlay() {
@@ -177,39 +216,100 @@ function gbResume() {
 }
 
 /* ---------- Ansichten ---------- */
+// Symbole statt Farbnamen (24×24, Strichzeichnung in der Schriftfarbe)
+const GB_ICONS = [
+  // Jahrzehnt: Sanduhr
+  '<path d="M6 2h12M6 22h12"/><path d="M7 2v3a5 5 0 0 0 2.4 4.3L12 11l2.6-1.7A5 5 0 0 0 17 5V2"/><path d="M7 22v-3a5 5 0 0 1 2.4-4.3L12 13l2.6 1.7A5 5 0 0 1 17 19v3"/>',
+  // Titel: Musiknote
+  '<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>',
+  // Interpret: Mikrofon
+  '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v1a7 7 0 0 0 14 0v-1"/><path d="M12 18v4M8 22h8"/>',
+  // Jahr ±3: Kalender mit ±
+  '<rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 9h18"/><path d="M9 14h6M12 11.5v5M9 19h6"/>',
+  // Jahr exakt: Zielscheibe
+  '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2" fill="currentColor"/>',
+];
+const gbIcon = (i, size) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${GB_ICONS[i]}</svg>`;
+
 function gbLegendHtml() {
-  return `<div class="gb-legend">${GB_COLORS.map(c =>
-    `<div class="gb-leg"><span class="gb-dot" style="background:${c.hex}"></span><b>${c.name}</b><span class="small">${c.task}</span></div>`).join('')}</div>`;
+  return `<div class="gb-legend">${GB_COLORS.map((c, i) =>
+    `<div class="gb-leg"><span class="gb-ico" style="background:${c.hex};color:${c.fg}">${gbIcon(i, 16)}</span><b>${c.name}</b><span class="small">${c.task}</span></div>`).join('')}</div>`;
 }
+
+const gbCellInner = i => `${gbIcon(i, 18)}<span>${GB_COLORS[i].cell}</span>`;
 
 function gbBoardHtml(board) {
   return `<div class="gb-board">${board.map(i => {
     const c = GB_COLORS[i];
-    return `<div class="gb-cell" style="background:${c.hex};color:${c.fg}">${c.cell}</div>`;
+    return `<div class="gb-cell" style="background:${c.hex};color:${c.fg}">${gbCellInner(i)}</div>`;
   }).join('')}</div>`;
 }
 
+// Glücksrad: feststehender Rahmen mit Lämpchen, drehende Scheibe, feststehender Glanz + Nabe.
 function gbWheelHtml() {
   const b = S.bingo;
-  const pt = a => `${(100 * Math.cos(a)).toFixed(2)} ${(100 * Math.sin(a)).toFixed(2)}`;
-  let segs = '';
+  const P = (r, deg) => { const a = (deg - 90) * Math.PI / 180; return `${(r * Math.cos(a)).toFixed(2)} ${(r * Math.sin(a)).toFixed(2)}`; };
+  let segs = '', seps = '', pegs = '', bulbs = '';
   GB_COLORS.forEach((c, i) => {
-    const a0 = (i * 72 - 90) * Math.PI / 180, a1 = ((i + 1) * 72 - 90) * Math.PI / 180;
-    segs += `<path d="M0 0 L${pt(a0)} A100 100 0 0 1 ${pt(a1)}Z" fill="${c.hex}" stroke="#14121c" stroke-width="1.5"/>
-      <g transform="rotate(${i * 72 + 36})"><text y="-68" class="w1" fill="${c.fg}">${c.name}</text><text y="-53" class="w2" fill="${c.fg}">${c.wheel}</text></g>`;
+    segs += `<path d="M0 0 L${P(100, i * 72)} A100 100 0 0 1 ${P(100, (i + 1) * 72)}Z" fill="${c.hex}"/>`;
   });
+  GB_COLORS.forEach((c, i) => {
+    seps += `<path d="M0 0 L${P(100, i * 72)}" stroke="url(#gbGold)" stroke-width="2.4"/>`;
+    segs += `<g transform="rotate(${i * 72 + 36})" color="${c.fg}">
+      <g transform="translate(0 -66) scale(1.25) translate(-12 -12)" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round" filter="url(#gbIconShadow)">${GB_ICONS[i]}</g>
+      <text y="-37" class="w2" fill="currentColor">${c.wheel}</text></g>`;
+  });
+  for (let k = 0; k < 15; k++) pegs += `<circle cx="${P(95, k * 24).split(' ')[0]}" cy="${P(95, k * 24).split(' ')[1]}" r="2.3" fill="url(#gbGold)" stroke="#5c430f" stroke-width=".5"/>`;
+  for (let k = 0; k < 20; k++) { const [x, y] = P(112, k * 18 + 9).split(' '); bulbs += `<circle cx="${x}" cy="${y}" r="3.3" class="bulb ${k % 2 ? 'a' : 'b'}" filter="url(#gbGlow)"/>`; }
   const rot = gbSpinning ? gbSpinFrom : (b.rot || 0);
   return `<div class="gb-wheel ${gbSpinning ? 'spinning' : ''}" data-action="gbSpin" role="button" aria-label="Glücksrad drehen">
-    <div class="gb-pointer"></div>
-    <svg viewBox="-106 -106 212 212" id="gbrot" style="transform:rotate(${rot}deg)">
-      <circle r="104" fill="#f3f0fa"/>${segs}
-      <circle r="17" fill="#14121c" stroke="#f3f0fa" stroke-width="4"/>
-    </svg></div>`;
+    <svg class="gb-pointer" viewBox="0 0 40 52" aria-hidden="true">
+      <defs><linearGradient id="gbPtr" x1="0" x2="1"><stop offset="0" stop-color="#fff6d0"/><stop offset=".45" stop-color="#f0c24a"/><stop offset="1" stop-color="#9c7419"/></linearGradient></defs>
+      <path d="M20 50 L5 16 A15.5 15.5 0 1 1 35 16 Z" fill="url(#gbPtr)" stroke="#5c430f" stroke-width="1.5"/>
+      <circle cx="20" cy="15" r="5.5" fill="#fffaf0" stroke="#b8862b" stroke-width="1.2"/></svg>
+    <div class="gb-stage">
+      <svg viewBox="-122 -122 244 244" aria-hidden="true">
+        <defs>
+          <linearGradient id="gbGold" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#fff3c4"/><stop offset=".3" stop-color="#e2b440"/><stop offset=".55" stop-color="#8a6416"/><stop offset=".8" stop-color="#f5d77a"/><stop offset="1" stop-color="#b8862b"/></linearGradient>
+          <filter id="gbGlow" x="-2" y="-2" width="5" height="5"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        <circle r="114" cy="5" fill="#3a2a0c"/>
+        <circle r="112" fill="none" stroke="url(#gbGold)" stroke-width="14"/>
+        <circle r="104.5" fill="none" stroke="#2a2340" stroke-width="2"/>
+        ${bulbs}
+      </svg>
+      <svg viewBox="-122 -122 244 244" id="gbrot" style="transform:rotate(${rot}deg)" aria-hidden="true">
+        <defs>
+          <radialGradient id="gbShade" cx="0" cy="0" r="100" gradientUnits="userSpaceOnUse">
+            <stop offset="0" stop-color="#fff" stop-opacity=".28"/><stop offset=".5" stop-color="#fff" stop-opacity="0"/><stop offset="1" stop-color="#000" stop-opacity=".38"/></radialGradient>
+          <filter id="gbIconShadow" x="-.5" y="-.5" width="2" height="2"><feDropShadow dx="0" dy="1" stdDeviation=".8" flood-opacity=".45"/></filter>
+        </defs>
+        ${segs}
+        <circle r="100" fill="url(#gbShade)"/>
+        ${seps}${pegs}
+      </svg>
+      <svg viewBox="-122 -122 244 244" class="gb-gloss" aria-hidden="true">
+        <defs>
+          <linearGradient id="gbShine" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff" stop-opacity=".55"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>
+          <radialGradient id="gbHub" cx=".35" cy=".3" r=".8"><stop offset="0" stop-color="#fffbe6"/><stop offset=".45" stop-color="#e2b440"/><stop offset="1" stop-color="#6e4f10"/></radialGradient>
+        </defs>
+        <path class="gb-hl" d="M0 0 L${P(100, -36)} A100 100 0 0 1 ${P(100, 36)}Z" fill="#fff"/>
+        <ellipse cx="-22" cy="-50" rx="78" ry="40" transform="rotate(-24 -22 -50)" fill="url(#gbShine)"/>
+        <circle r="22" fill="url(#gbHub)" stroke="#5c430f" stroke-width="1.5"/>
+        <path d="M0 -11 L3.2 -3.6 L11 -3.4 L4.9 1.6 L7 9.2 L0 4.8 L-7 9.2 L-4.9 1.6 L-11 -3.4 L-3.2 -3.6Z" fill="#fffaf0" stroke="#8a6416" stroke-width=".8"/>
+      </svg>
+    </div>
+    <div class="gb-base"></div>
+    <div class="gb-burst"></div>
+  </div>`;
 }
 
 function gbCatHtml(c, big) {
+  const i = GB_COLORS.indexOf(c);
   return `<div class="gb-cat ${big ? 'big' : ''}" style="--c:${c.hex};--fg:${c.fg}">
-    <div class="gb-cname">${c.name}</div><div class="gb-ctask">${c.task}</div>
+    ${big ? `<div class="gb-cicon">${gbIcon(i, 72)}</div>` : ''}
+    <div class="gb-cname">${big ? '' : gbIcon(i, 16)} ${c.name}</div><div class="gb-ctask">${c.task}</div>
     ${big ? `<div class="gb-chint">${c.hint}</div>` : ''}</div>`;
 }
 
@@ -293,6 +393,7 @@ function gbGameHtml() {
     return h;
   }
 
+  if (['playing', 'countdown', 'solution'].includes(b.phase)) h += '<div class="disco-ball" aria-hidden="true"></div>';
   h += gbCatHtml(c, false);
 
   if (b.phase === 'playing') {
@@ -401,7 +502,7 @@ function gbCardView() {
   if (lines.length) h += `<div class="gb-banner">BINGO!${lines.length > 1 ? ` <span>${lines.length}×</span>` : ''}</div>`;
   h += `<div class="gb-board mine">${board.map((ci, i) => {
     const col = GB_COLORS[ci];
-    return `<button class="gb-cell ${marks.has(i) ? 'on' : ''} ${inLine.has(i) ? 'line' : ''}" data-action="gbMark" data-i="${i}" style="background:${col.hex};color:${col.fg}" aria-pressed="${marks.has(i)}">${col.cell}</button>`;
+    return `<button class="gb-cell ${marks.has(i) ? 'on' : ''} ${inLine.has(i) ? 'line' : ''}" data-action="gbMark" data-i="${i}" style="background:${col.hex};color:${col.fg}" aria-pressed="${marks.has(i)}">${gbCellInner(ci)}</button>`;
   }).join('')}</div>`;
   h += `<p class="small" style="text-align:center;margin-top:12px">Richtig geraten? Tippe ein Feld in der gedrehten Farbe an. Nochmal tippen nimmt den Haken zurück.</p>`;
   h += `<div class="card"><h2>Legende</h2>${gbLegendHtml()}</div>`;
@@ -414,6 +515,32 @@ window.addEventListener('hashchange', () => {
   const c = gbParseCardHash();
   if (c) { S.card = c; S.view = 'card'; render(); window.scrollTo({ top: 0 }); }
 });
+
+/* ---------- Diskokugel-Effekt, solange der Song läuft ----------
+   Die Lichtpunkte liegen als feste Ebene hinter der App und bleiben bei jedem
+   Neuzeichnen erhalten, damit die Drehung nicht ruckelt. */
+const GB_DISCO_PHASES = ['playing', 'countdown', 'solution'];
+
+function gbSpots(n) {
+  const cols = ['#ff4fa3', '#9b5de5', '#3b82f6', '#22c55e', '#facc15', '#ffffff', '#7fd1c7'];
+  return Array.from({ length: n }, () => {
+    const x = (Math.random() * 100).toFixed(1), y = (Math.random() * 100).toFixed(1);
+    const c = cols[gbRand(cols.length)], r = 6 + Math.random() * 10;
+    return `radial-gradient(circle at ${x}% ${y}%, ${c} 0, ${c} ${(r * 0.6).toFixed(1)}px, ${c}88 ${r.toFixed(1)}px, transparent ${(r * 1.8).toFixed(1)}px)`;
+  }).join(',');
+}
+
+function gbAfterRender() {
+  const b = S.bingo;
+  const on = S.view === 'bingo' && !!b && !gbBoardsOpen && !gbSpinning && GB_DISCO_PHASES.includes(b.phase);
+  let el = document.getElementById('disco');
+  if (on && !el) {
+    el = document.createElement('div');
+    el.id = 'disco'; el.setAttribute('aria-hidden', 'true');
+    el.innerHTML = `<div class="spots s1" style="background:${gbSpots(70)}"></div><div class="spots s2" style="background:${gbSpots(50)}"></div>`;
+    document.body.prepend(el);
+  } else if (!on && el) el.remove();
+}
 
 /* ---------- Aktionen (werden in app.js eingebunden) ---------- */
 const GOBIN_ACTIONS = {
