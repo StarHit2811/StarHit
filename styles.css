@@ -344,3 +344,13 @@ html, body { overflow-x: clip; }
 .gb-gloss ellipse { opacity: .75; }
 #disco { opacity: .95; }
 #disco::after { content: ''; position: absolute; inset: 0; background: radial-gradient(circle at 50% 14%, rgba(255,255,255,.10), rgba(155,93,229,.06) 40%, transparent 70%); }
+
+/* GoBin: Karte des Spielers am Spielhandy */
+.gb-top { justify-content: flex-end; margin-bottom: 6px; }
+.gb-top .gb-minebtn { margin-right: auto; }
+.gb-round { text-align: center; margin-bottom: 8px; }
+.btn.gb-minebtn { border-color: var(--accent); color: var(--accent); }
+.gb-boardcard.mine { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.gb-minetag { font-size: 13px; font-weight: 700; color: var(--accent); margin-left: 6px; }
+.gb-thisround { display: flex; align-items: center; justify-content: center; gap: 8px; margin-bottom: 12px; padding: 8px 12px;
+  border-radius: 12px; background: var(--c); color: var(--fg); font-size: 15px; }
