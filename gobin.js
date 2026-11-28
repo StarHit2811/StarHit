@@ -149,7 +149,8 @@ function gbSolve() {
 
 function gbNext() {
   const b = S.bingo;
-  if (!b.demo) pausePlayback(); // Musik stoppen
+  // Musik bewusst NICHT stoppen: Ein pausiertes Spotify schläft im Hintergrund ein
+  // und ist dann für den nächsten Song nicht mehr erreichbar. Der nächste Song ersetzt den alten.
   Object.assign(b, { phase: 'wheel', color: null, current: null, cdEnds: null, round: b.round + 1 });
   S.msg = null; gbHint = false; save(); render(); window.scrollTo({ top: 0 });
 }
