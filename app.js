@@ -22,7 +22,9 @@ const store = {
 };
 
 const S = {
-  view: 'home',
+  view: 'lobby',
+  mode: store.get('zk_mode', 'starhit'),   // zuletzt gewähltes Spiel: 'starhit' | 'gobin'
+  bingo: store.get('zk_bingo', null),
   clientId: store.get('zk_client_id', '') || (window.STARHIT_CONFIG && window.STARHIT_CONFIG.clientId) || '',
   auth: store.get('zk_auth', null),
   me: store.get('zk_me', null),
@@ -51,6 +53,8 @@ function save() {
   store.set('zk_settings', S.settings);
   store.set('zk_players', S.players);
   store.set('zk_game', S.game);
+  store.set('zk_mode', S.mode);
+  store.set('zk_bingo', S.bingo);
 }
 
 /* ---------- Helfer ---------- */
@@ -564,19 +568,23 @@ function nextTurn() {
 /* ---------- Ansichten ---------- */
 function header() {
   const tab = (v, label) => `<button data-action="nav" data-view="${v}" class="${S.view === v ? 'on' : ''}">${label}</button>`;
+  const lobby = S.view === 'lobby', gobin = S.mode === 'gobin';
+  let tabs;
+  if (lobby) tabs = tab('songs', 'Songs') + tab('settings', '⚙︎') + tab('help', '?');
+  else if (gobin) tabs = tab('bingo', 'Bingo') + tab('songs', 'Songs') + tab('settings', '⚙︎') + tab('help', '?');
+  else tabs = `${S.game && S.game.phase !== 'over' ? tab('game', 'Spiel') : ''}
+      ${tab('home', 'Start')}${tab('songs', 'Songs')}${tab('settings', '⚙︎')}${tab('help', '?')}`;
+  // Das Logo führt immer zurück zur Startseite mit der Spielauswahl.
   return `<header class="top">
-    <div class="logo"><img src="icon.svg" alt="">StarHit</div>
-    <nav class="tabs">
-      ${S.game && S.game.phase !== 'over' ? tab('game', 'Spiel') : ''}
-      ${tab('home', 'Start')}${tab('songs', 'Songs')}${tab('settings', '⚙︎')}${tab('help', '?')}
-    </nav>
+    <button class="logo" data-action="nav" data-view="lobby" aria-label="Zur Startseite">${lobby ? '' : '<span class="back">‹</span>'}<img src="icon.svg" alt="">${!lobby && gobin ? 'GoBin' : 'StarHit'}</button>
+    <nav class="tabs">${tabs}</nav>
   </header>`;
 }
 
-function viewHome() {
+// Spotify- und Playlist-Karte: gemeinsam genutzt von StarHit-Start und der Startseite.
+function spotifyCardHtml(title) {
   let h = '';
-  // 1 · Spotify
-  h += `<div class="card"><h2>1 · Spotify</h2>`;
+  h += `<div class="card"><h2>${title}</h2>`;
   if (!S.clientId) {
     h += `<p>Noch keine Spotify-Client-ID hinterlegt.</p><button class="btn primary" data-action="nav" data-view="settings">Einrichten</button>
           <p class="small" style="margin-top:10px">Nur ausprobieren? Unten bei „Playlist“ gibt es Demo-Songs ohne Spotify.</p>`;
@@ -588,9 +596,12 @@ function viewHome() {
           <button class="btn sm ghost" data-action="logout">Abmelden</button></div>`;
   }
   h += `</div>`;
+  return h;
+}
 
-  // 2 · Playlist
-  h += `<div class="card"><h2>2 · Playlist</h2>`;
+function playlistCardHtml(title) {
+  let h = '';
+  h += `<div class="card"><h2>${title}</h2>`;
   if (S.playlist) {
     const n = playableTracks().length;
     h += `<div class="row" style="margin-bottom:10px"><div class="grow"><b>${esc(S.playlist.name)}</b><div class="small">${n} spielbare Songs</div></div>
@@ -613,6 +624,29 @@ function viewHome() {
     }
   }
   h += `<button class="btn ghost sm" style="margin-top:8px" data-action="demo">Demo-Songs (ohne Spotify) laden</button></div>`;
+  return h;
+}
+
+/* ---------- Startseite: Spielauswahl ---------- */
+function viewLobby() {
+  const shRun = S.game && S.game.phase !== 'over', gbRun = !!S.bingo;
+  let h = `<p class="lobby-q">Was wollt ihr spielen?</p>
+    <button class="gametile sh" data-action="openGame" data-game="starhit">
+      <span class="gt-ico"><img src="icon.svg" alt=""></span>
+      <span class="gt-txt"><span class="gt-name">StarHit</span><span class="gt-sub">Songs hören und auf dem eigenen Zeitstrahl einordnen</span>
+      ${shRun ? '<span class="gt-run">Spiel läuft · fortsetzen</span>' : ''}</span></button>
+    <button class="gametile gb" data-action="openGame" data-game="gobin">
+      <span class="gt-ico"><span class="mini-wheel"></span></span>
+      <span class="gt-txt"><span class="gt-name">StarHit GoBin</span><span class="gt-sub">Musik-Bingo mit Glücksrad – die Felder liegen auf Papier</span>
+      ${gbRun ? '<span class="gt-run">Spiel läuft · fortsetzen</span>' : ''}</span></button>
+    <h2 style="margin-top:22px">Musik für beide Spiele</h2>`;
+  h += spotifyCardHtml('Spotify') + playlistCardHtml('Playlist');
+  return h;
+}
+
+function viewHome() {
+  let h = '';
+  h += spotifyCardHtml('1 · Spotify') + playlistCardHtml('2 · Playlist');
 
   // 3 · Mitspieler
   h += `<div class="card"><h2>3 · Mitspieler</h2><div class="stack">`;
@@ -855,10 +889,13 @@ async function busy(label, fn) {
 }
 
 function render() {
-  const views = { home: viewHome, game: viewGame, songs: viewSongs, settings: viewSettings, help: viewHelp };
+  const views = {
+    lobby: viewLobby, home: viewHome, game: viewGame, bingo: viewBingo, songs: viewSongs, settings: viewSettings,
+    help: () => S.mode === 'gobin' ? gbHelpHtml() + viewHelp() : viewHelp() + gbHelpHtml(),
+  };
   let h = header();
   if (S.msg) h += `<div class="msg ${S.msg.kind}">${S.msg.html || esc(S.msg.text)}</div>`;
-  h += (views[S.view] || viewHome)();
+  h += (views[S.view] || viewLobby)();
   if (busyLabel) h += `<div class="busy"><span class="spinner"></span>${esc(busyLabel)}</div>`;
   const app = document.getElementById('app');
   const plLink = document.getElementById('plLink');
@@ -870,6 +907,12 @@ function render() {
 
 /* ---------- Aktionen ---------- */
 const actions = {
+  ...GOBIN_ACTIONS,
+  openGame: el => {
+    S.mode = el.dataset.game === 'gobin' ? 'gobin' : 'starhit';
+    S.view = S.mode === 'gobin' ? 'bingo' : (S.game && S.game.phase !== 'over' ? 'game' : 'home');
+    S.msg = null; save(); render(); window.scrollTo({ top: 0 });
+  },
   nav: el => { S.view = el.dataset.view; S.msg = null; render(); window.scrollTo({ top: 0 }); },
   login: () => login(),
   logout: () => logout(),
@@ -914,7 +957,7 @@ const actions = {
   resetYear: el => { delete S.overrides[el.dataset.id]; save(); render(); },
   resetAll: () => {
     if (!confirm('Wirklich alles löschen (Login, Playlist, Korrekturen, Spielstand)?')) return;
-    ['zk_auth', 'zk_me', 'zk_playlist', 'zk_overrides', 'zk_excluded', 'zk_settings', 'zk_players', 'zk_game', 'zk_client_id'].forEach(store.del);
+    ['zk_auth', 'zk_me', 'zk_playlist', 'zk_overrides', 'zk_excluded', 'zk_settings', 'zk_players', 'zk_game', 'zk_client_id', 'zk_mode', 'zk_bingo'].forEach(store.del);
     location.reload();
   },
 };
@@ -953,12 +996,16 @@ document.addEventListener('change', e => {
   }
 });
 
-document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && S.view === 'game') keepAwake(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && (S.view === 'game' || S.view === 'bingo')) keepAwake(); });
 
 (async function init() {
-  if (S.game && S.game.phase !== 'over') S.view = 'game';
+  // Ein laufendes Spiel des zuletzt gewählten Modus wird direkt fortgesetzt
+  // (Handy-Browser laden die Seite nach dem Wechsel zu Spotify oft neu), sonst Startseite.
+  if (S.mode === 'gobin' && S.bingo) S.view = 'bingo';
+  else if (S.mode !== 'gobin' && S.game && S.game.phase !== 'over') S.view = 'game';
   if (S.game && S.game.phase === 'challenge') startCountdown();
+  gbResume();
   await handleRedirect();
-  if (S.msg && S.msg.kind === 'ok' && S.auth) S.view = 'home';
+  if (S.msg && S.msg.kind === 'ok' && S.auth) S.view = 'lobby';
   render();
 })();
